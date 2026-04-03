@@ -39,7 +39,7 @@ class ActionCatalog:
         self.max_actions = max_actions
         self.feature_extractor = feature_extractor or FeatureExtractor(max_actions=max_actions)
 
-    def build(self, state: BackendState, player: int) -> list[ActionBundle]:
+    def build(self, state: BackendState, player: int, skip_rerank: bool = False) -> list[ActionBundle]:
         bundles: list[ActionBundle] = [ActionBundle(name="hold", score=0.0, tags=("noop",))]
         bundles.extend(self._build_candidates(state, player))
         bundles.extend(self._upgrade_candidates(state, player))
@@ -53,6 +53,8 @@ class ActionCatalog:
             if key not in unique or bundle.score > unique[key].score:
                 unique[key] = bundle
         ordered = sorted(unique.values(), key=lambda item: item.score, reverse=True)
+        if skip_rerank:
+            return ordered[: self.max_actions]
         reranked = self._rerank_with_one_step_rollout(state, player, ordered[: min(len(ordered), self.max_actions * 2)])
         return reranked[: self.max_actions]
 
