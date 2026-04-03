@@ -86,8 +86,8 @@ class SearchConfig:
     iterations: int = 64
     max_depth: int = 4
     c_puct: float = 1.25
-    root_action_limit: int = 16
-    child_action_limit: int = 10
+    root_action_limit: int = 8
+    child_action_limit: int = 4
     dirichlet_alpha: float = 0.35
     dirichlet_epsilon: float = 0.25
     prior_mix: float = 0.7
@@ -349,7 +349,7 @@ class PriorGuidedMCTS:
 
     def _predict_enemy_bundle(self, state: BackendState, player: int) -> ActionBundle:
         enemy = 1 - player
-        enemy_bundles = self.action_catalog.build(state, enemy)
+        enemy_bundles = self.action_catalog.build(state, enemy, skip_rerank=True)
         if not enemy_bundles:
             fallback = self.action_catalog.build(state, player)
             return fallback[0]
@@ -381,7 +381,7 @@ class PriorGuidedMCTS:
             node.expanded = True
             return terminal
 
-        action_bundles = bundles or self.action_catalog.build(node.state, node.player)
+        action_bundles = bundles or self.action_catalog.build(node.state, node.player, skip_rerank=(node.depth > 0))
         node.bundles = action_bundles
         inference = self._blend_policy_value(node.state, node.player, action_bundles)
         node.priors = inference.priors
