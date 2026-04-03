@@ -23,6 +23,7 @@ class MCTSAgent(BaseAgent):
     def __init__(
         self,
         iterations: int = 64,
+        min_iterations: int = 32,
         max_depth: int = 4,
         seed: int | None = None,
         max_actions: int = MAX_ACTIONS,
@@ -30,6 +31,7 @@ class MCTSAgent(BaseAgent):
         c_puct: float = 1.25,
         prior_mix: float = 0.7,
         value_mix: float = 0.7,
+        time_budget: float = 9.0,
     ) -> None:
         super().__init__(seed=seed, max_actions=max_actions)
         self.model = self._load_model(model_path)
@@ -37,10 +39,12 @@ class MCTSAgent(BaseAgent):
             model=self.model,
             search_config=SearchConfig(
                 iterations=iterations,
+                min_iterations=min_iterations,
                 max_depth=max_depth,
                 c_puct=c_puct,
                 prior_mix=prior_mix,
                 value_mix=value_mix,
+                time_budget=time_budget,
                 seed=seed or 0,
             ),
             feature_extractor=self.feature_extractor,
@@ -104,8 +108,11 @@ class MCTSAgent(BaseAgent):
 
 class AI(MCTSAgent):
     def __init__(self, *args, **kwargs):
-        kwargs['iterations'] = 1   # 稳妥起见，设为 1 或 2，完全靠网络直觉
-        kwargs['max_depth'] = 1
+        # Ensure we stay within time limits while performing a reasonable search
+        kwargs['iterations'] = 64
+        kwargs['min_iterations'] = 16
+        kwargs['max_depth'] = 2
+        kwargs['time_budget'] = 8.5
         
         # 2. 把 .npz 文件直接和 ai.py 放在同级目录
         current_dir = os.path.dirname(os.path.abspath(__file__))
