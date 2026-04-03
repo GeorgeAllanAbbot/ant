@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import math
 from pathlib import Path
 import random
+import time
 
 import numpy as np
 
@@ -84,6 +85,7 @@ class PolicyValueInference:
 @dataclass(slots=True)
 class SearchConfig:
     iterations: int = 64
+    min_iterations: int = 32
     max_depth: int = 4
     c_puct: float = 1.25
     root_action_limit: int = 8
@@ -93,6 +95,7 @@ class SearchConfig:
     prior_mix: float = 0.7
     value_mix: float = 0.7
     value_scale: float = 350.0
+    time_budget: float = 9.0
     seed: int = 0
 
 
@@ -459,6 +462,7 @@ class PriorGuidedMCTS:
         temperature: float = 0.0,
         add_root_noise: bool = False,
     ) -> SearchResult:
+        start_time = time.time()
         root = SearchNode(state=state.clone(), player=player)
         root_value = self._expand(root, bundles=bundles, add_root_noise=add_root_noise)
         if not root.bundles:
@@ -472,7 +476,9 @@ class PriorGuidedMCTS:
                 priors=np.zeros(self.action_dim, dtype=np.float32),
             )
 
-        for _ in range(self.search_config.iterations):
+        for i in range(self.search_config.iterations):
+            if i >= self.search_config.min_iterations and (time.time() - start_time) >= self.search_config.time_budget:
+                break
             node = root
             path = [root]
             # When looking for a child to traverse, note that node.state cannot be None because

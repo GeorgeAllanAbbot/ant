@@ -39,13 +39,19 @@ class ActionCatalog:
         self.max_actions = max_actions
         self.feature_extractor = feature_extractor or FeatureExtractor(max_actions=max_actions)
 
-    def build(self, state: BackendState, player: int, skip_rerank: bool = False) -> list[ActionBundle]:
+    def build(self, state: BackendState, player: int, skip_rerank: bool = False, rerank_limit: int = 16) -> list[ActionBundle]:
         bundles: list[ActionBundle] = [ActionBundle(name="hold", score=0.0, tags=("noop",))]
+        enemy = 1 - player
+        my_ants = state.ants_of(player)
+        enemy_ants = state.ants_of(enemy)
+        my_towers = state.towers_of(player)
+        enemy_towers = state.towers_of(enemy)
+
         bundles.extend(self._build_candidates(state, player))
-        bundles.extend(self._upgrade_candidates(state, player))
-        bundles.extend(self._downgrade_candidates(state, player))
+        bundles.extend(self._upgrade_candidates(state, player, my_towers))
+        bundles.extend(self._downgrade_candidates(state, player, my_towers, enemy_ants))
         bundles.extend(self._base_upgrade_candidates(state, player))
-        bundles.extend(self._superweapon_candidates(state, player))
+        bundles.extend(self._superweapon_candidates(state, player, my_ants, enemy_ants, enemy_towers))
         bundles.extend(self._paired_candidates(state, player, bundles[1:]))
         unique: dict[tuple[tuple[int, int, int], ...], ActionBundle] = {}
         for bundle in bundles:
@@ -55,7 +61,8 @@ class ActionCatalog:
         ordered = sorted(unique.values(), key=lambda item: item.score, reverse=True)
         if skip_rerank:
             return ordered[: self.max_actions]
-        reranked = self._rerank_with_one_step_rollout(state, player, ordered[: min(len(ordered), self.max_actions * 2)])
+        rerank_count = min(len(ordered), rerank_limit)
+        reranked = self._rerank_with_one_step_rollout(state, player, ordered[:rerank_count])
         return reranked[: self.max_actions]
 
     def action_mask(self, bundles: list[ActionBundle]) -> np.ndarray:
@@ -84,10 +91,10 @@ class ActionCatalog:
             results.append(ActionBundle(name=f"build@{x},{y}", operations=(op,), score=score, tags=("build",)))
         return results
 
-    def _upgrade_candidates(self, state: BackendState, player: int) -> list[ActionBundle]:
+    def _upgrade_candidates(self, state: BackendState, player: int, my_towers: list[Tower]) -> list[ActionBundle]:
         results: list[ActionBundle] = []
         enemy_base = PLAYER_BASES[1 - player]
-        for tower in state.towers_of(player):
+        for tower in my_towers:
             local_density = self._local_enemy_pressure(state, player, tower.x, tower.y)
             for target in TOWER_UPGRADE_TREE.get(tower.tower_type, ()): 
                 op = Operation(OperationType.UPGRADE_TOWER, tower.tower_id, int(target))
@@ -105,10 +112,10 @@ class ActionCatalog:
                 )
         return results
 
-    def _downgrade_candidates(self, state: BackendState, player: int) -> list[ActionBundle]:
+    def _downgrade_candidates(self, state: BackendState, player: int, my_towers: list[Tower], enemy_ants: list[Ant]) -> list[ActionBundle]:
         results: list[ActionBundle] = []
-        for tower in state.towers_of(player):
-            pressure = self._local_enemy_pressure(state, player, tower.x, tower.y)
+        for tower in my_towers:
+            pressure = self._local_enemy_pressure_fast(enemy_ants, tower.x, tower.y)
             if pressure > 1.5:
                 continue
             op = Operation(OperationType.DOWNGRADE_TOWER, tower.tower_id)
@@ -141,12 +148,8 @@ class ActionCatalog:
                     results.append(ActionBundle("upgrade-gen", (op,), score, ("base", "tempo")))
         return results
 
-    def _superweapon_candidates(self, state: BackendState, player: int) -> list[ActionBundle]:
+    def _superweapon_candidates(self, state: BackendState, player: int, my_ants: list[Ant], enemy_ants: list[Ant], enemy_towers: list[Tower]) -> list[ActionBundle]:
         results: list[ActionBundle] = []
-        enemy = 1 - player
-        enemy_ants = state.ants_of(enemy)
-        my_ants = state.ants_of(player)
-        enemy_towers = state.towers_of(enemy)
 
         if enemy_ants and state.weapon_cooldowns[player, SuperWeaponType.LIGHTNING_STORM] == 0 and state.coins[player] >= SUPER_WEAPON_STATS[SuperWeaponType.LIGHTNING_STORM].cost:
             best = max(
@@ -206,15 +209,8 @@ class ActionCatalog:
                 operations = first.operations + second.operations
                 if len(operations) > 2:
                     continue
-                trial = state.clone()
-                accepted: list[Operation] = []
-                legal = True
-                for op in operations:
-                    if not trial.can_apply_operation(player, op, accepted):
-                        legal = False
-                        break
-                    accepted.append(op)
-                if not legal:
+                accepted: list[Operation] = [operations[0]]
+                if not state.can_apply_operation(player, operations[1], accepted):
                     continue
                 score = first.score + second.score * 0.9
                 name = f"{first.name}+{second.name}"
@@ -236,8 +232,11 @@ class ActionCatalog:
         return reranked
 
     def _local_enemy_pressure(self, state: BackendState, player: int, x: int, y: int) -> float:
+        return self._local_enemy_pressure_fast(state.ants_of(1 - player), x, y)
+
+    def _local_enemy_pressure_fast(self, enemy_ants: list[Ant], x: int, y: int) -> float:
         pressure = 0.0
-        for ant in state.ants_of(1 - player):
+        for ant in enemy_ants:
             distance = hex_distance(x, y, ant.x, ant.y)
             if distance <= 6:
                 pressure += max(0.0, 6.5 - distance) * (1.0 + ant.level * 0.4)
