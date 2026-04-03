@@ -111,7 +111,7 @@ class SearchResult:
 
 @dataclass(slots=True)
 class SearchNode:
-    state: BackendState
+    state: BackendState | None
     player: int
     prior: float = 0.0
     bundle: ActionBundle | None = None
@@ -210,10 +210,13 @@ class PolicyValueNet:
         return hidden1_pre, hidden1, hidden2_pre, hidden2, logits.astype(np.float32, copy=False), values.astype(np.float32, copy=False)
 
     def predict(self, observation: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, float]:
-        batch = observation.astype(np.float32, copy=False)[None, :]
-        _, _, _, _, logits, values = self._forward(batch)
-        priors = _masked_softmax(logits[0], mask.astype(np.float32, copy=False))
-        return priors, float(values[0, 0])
+        # Fast path for single observation (1D operations)
+        h1 = np.maximum(observation.astype(np.float32, copy=False) @ self.w1 + self.b1, 0.0)
+        h2 = np.maximum(h1 @ self.w2 + self.b2, 0.0)
+        logits = h2 @ self.policy_w + self.policy_b
+        priors = _masked_softmax(logits, mask.astype(np.float32, copy=False))
+        value = float(math.tanh(np.dot(h2, self.value_w)[0] + self.value_b[0]))
+        return priors, value
 
     def update(
         self,
@@ -379,6 +382,8 @@ class PriorGuidedMCTS:
         if node.expanded:
             return node.mean_value
 
+        assert node.state is not None
+
         terminal = _terminal_value(node.state, node.player)
         if terminal is not None:
             node.expanded = True
@@ -407,16 +412,11 @@ class PriorGuidedMCTS:
 
         limit = self.search_config.root_action_limit if node.depth == 0 else self.search_config.child_action_limit
         for action_index in self._branch_indices(node.priors, action_bundles, limit):
-            child_state = node.state.clone()
             bundle = action_bundles[action_index]
-            enemy_bundle = self._predict_enemy_bundle(child_state, node.player)
-            if node.player == 0:
-                child_state.resolve_turn(bundle.operations, enemy_bundle.operations)
-            else:
-                child_state.resolve_turn(enemy_bundle.operations, bundle.operations)
+            # Lazy initialization: do not clone the state or compute enemy bundle yet
             node.children.append(
                 SearchNode(
-                    state=child_state,
+                    state=None,
                     player=node.player,
                     prior=float(node.priors[action_index]),
                     bundle=bundle,
@@ -481,9 +481,23 @@ class PriorGuidedMCTS:
                 break
             node = root
             path = [root]
+            # When looking for a child to traverse, note that node.state cannot be None because
+            # we initialize root with a state, and we only expand nodes that we've traversed into
+            # and resolved.
             while node.expanded and node.children and node.depth < self.search_config.max_depth and not node.state.terminal:
                 node = max(node.children, key=lambda child: self._puct(path[-1], child))
                 path.append(node)
+                # Lazy initialization: resolve state if this is the first time we visit this child
+                if node.state is None:
+                    parent = path[-2]
+                    assert parent.state is not None
+                    node.state = parent.state.clone()
+                    enemy_bundle = self._predict_enemy_bundle(node.state, parent.player)
+                    if parent.player == 0:
+                        node.state.resolve_turn(node.bundle.operations, enemy_bundle.operations)
+                    else:
+                        node.state.resolve_turn(enemy_bundle.operations, node.bundle.operations)
+
             if node.state.terminal or node.depth >= self.search_config.max_depth:
                 value = self._heuristic_value(node.state, node.player)
             else:
