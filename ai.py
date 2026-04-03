@@ -104,8 +104,8 @@ class MCTSAgent(BaseAgent):
 
 class AI(MCTSAgent):
     def __init__(self, *args, **kwargs):
-        kwargs['iterations'] = 1   # 稳妥起见，设为 1 或 2，完全靠网络直觉
-        kwargs['max_depth'] = 1
+        kwargs['iterations'] = 16  # 利用深层代码优化大幅降低的开销，稍微增加搜索迭代次数，提升准确率
+        kwargs['max_depth'] = 2
         
         # 2. 把 .npz 文件直接和 ai.py 放在同级目录
         current_dir = os.path.dirname(os.path.abspath(__file__))
